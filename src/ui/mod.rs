@@ -149,7 +149,7 @@ impl eframe::App for App {
                 ui.horizontal_wrapped(draw_connection);
                 ui.label(format!("设备：{}", self.identity.device_id));
                 ui.add_space(4.0);
-                ui.label("账号：");
+                self.draw_account_entry_button(ui);
                 mobile::text_edit(
                     ui,
                     "login_username",
@@ -186,7 +186,7 @@ impl eframe::App for App {
                     .num_columns(5)
                     .spacing([8.0, 3.0])
                     .show(ui, |ui| {
-                        ui.label("账号：");
+                        self.draw_account_entry_button(ui);
                         mobile::text_edit(
                             ui,
                             "login_username",
@@ -438,6 +438,17 @@ impl App {
     {
         let tx = self.tx.clone();
         std::thread::spawn(move || f(tx));
+    }
+
+    /// 顶栏「账号」入口：点击跳到多账号管理页。
+    pub fn draw_account_entry_button(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add(theme::primary_btn("账号"))
+            .on_hover_text("打开账号管理页（多账号）")
+            .clicked()
+        {
+            self.tab = 8;
+        }
     }
 
     pub fn logger(tx: Sender<String>) -> impl FnMut(&str) {

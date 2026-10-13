@@ -23,8 +23,13 @@ pub struct AccountsPage {
     pub adding: bool,
     pub new_user: String,
     pub new_pass: String,
-    /// 新账号是否沿用当前设备的城市与锚点。
-    pub copy_location: bool,
+    /// 新账号的设备与位置（创建时写入槽位 identity；设备 ID/MAC/安装时间自动全新生成）。
+    pub new_platform: String,
+    pub new_device_name: String,
+    pub new_os_version: String,
+    pub new_city: String,
+    pub new_lat: String,
+    pub new_lon: String,
     pub batch_running: bool,
     pub batch_done: usize,
     pub batch_total: usize,
@@ -34,9 +39,18 @@ impl AccountsPage {
     pub fn new() -> Self {
         Self {
             entries: model::load_accounts(),
-            copy_location: true,
             ..Default::default()
         }
+    }
+
+    /// 用给定设备身份填充新建表单（打开添加面板 / 点「填充当前设备」时）。
+    fn fill_from(&mut self, identity: &model::HeaderIdentity) {
+        self.new_platform = identity.platform.clone();
+        self.new_device_name = identity.device_name.clone();
+        self.new_os_version = identity.os_version.clone();
+        self.new_city = identity.city.clone();
+        self.new_lat = format!("{:.6}", identity.anchor_lat);
+        self.new_lon = format!("{:.6}", identity.anchor_lon);
     }
 }
 
@@ -90,12 +104,20 @@ impl App {
 
         // ── 添加 ───────────────────────────────────────────────
         ui.add_space(6.0);
+        let mut toggle_add = false;
+        let mut fill_now = false;
         mobile::row(ui, |ui| {
             if ui.button(if page.adding { "收起添加" } else { "添加账号" }).clicked() {
-                page.adding = !page.adding;
+                toggle_add = true;
             }
             ui.colored_label(theme::text_dim(), format!("已保存 {} 个账号", page.entries.len()));
         });
+        if toggle_add {
+            page.adding = !page.adding;
+            if page.adding {
+                page.fill_from(&self.identity);
+            }
+        }
         if page.adding {
             egui::Grid::new("account_add")
                 .num_columns(2)
@@ -114,13 +136,77 @@ impl App {
                     );
                     ui.end_row();
                 });
-            ui.checkbox(
-                &mut page.copy_location,
-                "沿用当前设备的城市与定位锚点（不同学校请取消，创建后切换到该账号再在设备页填写）",
-            );
+
+            ui.add_space(4.0);
+            mobile::row(ui, |ui| {
+                ui.label(egui::RichText::new("设备信息").strong());
+                if ui.button("填充当前设备").clicked() {
+                    fill_now = true;
+                }
+                ui.colored_label(
+                    theme::text_dim(),
+                    "设备 ID / MAC / 安装时间创建时自动生成，创建后终身复用",
+                );
+            });
+            if fill_now {
+                page.fill_from(&self.identity);
+            }
+            egui::Grid::new("account_device")
+                .num_columns(2)
+                .spacing([10.0, 3.0])
+                .show(ui, |ui| {
+                    ui.label("平台：");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut page.new_platform, "ios".to_string(), "iOS");
+                        ui.selectable_value(&mut page.new_platform, "android".to_string(), "Android");
+                    });
+                    ui.end_row();
+                    ui.label("机型：");
+                    mobile::text_edit(
+                        ui,
+                        "acc_model",
+                        &mut page.new_device_name,
+                        InputKind::Text,
+                        240.0,
+                    );
+                    ui.end_row();
+                    ui.label("系统版本：");
+                    mobile::text_edit(
+                        ui,
+                        "acc_os",
+                        &mut page.new_os_version,
+                        InputKind::Text,
+                        240.0,
+                    );
+                    ui.end_row();
+                });
+
+            ui.add_space(4.0);
+            mobile::row(ui, |ui| {
+                ui.label(egui::RichText::new("位置").strong());
+                ui.colored_label(theme::text_dim(), "先纬度后经度；跑步流程只用这里的锚点");
+            });
+            egui::Grid::new("account_place")
+                .num_columns(2)
+                .spacing([10.0, 3.0])
+                .show(ui, |ui| {
+                    ui.label("城市：");
+                    mobile::text_edit(ui, "acc_city", &mut page.new_city, InputKind::Text, 240.0);
+                    ui.end_row();
+                    ui.label("纬度：");
+                    mobile::text_edit(ui, "acc_lat", &mut page.new_lat, InputKind::Decimal, 240.0);
+                    ui.end_row();
+                    ui.label("经度：");
+                    mobile::text_edit(ui, "acc_lon", &mut page.new_lon, InputKind::Decimal, 240.0);
+                    ui.end_row();
+                });
+
             let create = !self.batch_busy
                 && !page.new_user.trim().is_empty()
-                && !page.new_pass.is_empty();
+                && !page.new_pass.is_empty()
+                && !page.new_city.trim().is_empty()
+                && !page.new_lat.trim().is_empty()
+                && !page.new_lon.trim().is_empty();
             if ui
                 .add_enabled(create, theme::primary_btn("创建账号"))
                 .clicked()
@@ -182,28 +268,53 @@ impl App {
         }
     }
 
-    /// 创建账号：独立槽位 + 全新设备指纹（城市/锚点可选沿用）。
+    /// 创建账号：独立槽位 + 全新设备指纹（设备/城市/锚点取表单值）。
     fn create_account(&mut self, page: &mut AccountsPage) {
         let username = page.new_user.trim().to_string();
         let password = page.new_pass.clone();
+        let city = page.new_city.trim().to_string();
+        let device_name = page.new_device_name.trim().to_string();
+        let lat: f64 = page.new_lat.trim().parse().unwrap_or(f64::NAN);
+        let lon: f64 = page.new_lon.trim().parse().unwrap_or(f64::NAN);
         if username.is_empty() || password.is_empty() {
             self.status = "请填写账号和密码".into();
             return;
         }
+        if device_name.is_empty() {
+            self.status = "请填写机型".into();
+            return;
+        }
+        if city.is_empty() {
+            self.status = "请填写城市".into();
+            return;
+        }
+        let coord = match crate::location::Coordinate::new(lat, lon, 0.0) {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = format!("经纬度无效：{e}");
+                return;
+            }
+        };
         let mut list = model::load_accounts();
         if list.iter().any(|a| a.username == username) {
             self.status = "该账号已存在".into();
             return;
         }
         let id = model::new_account_id();
-        let mut identity = self.identity.clone();
-        identity.freshen();
-        if !page.copy_location {
-            let d = crate::crypto::header::HeaderIdentity::default();
-            identity.city = d.city;
-            identity.anchor_lat = d.anchor_lat;
-            identity.anchor_lon = d.anchor_lon;
+        let mut identity = model::HeaderIdentity {
+            platform: page.new_platform.clone(),
+            device_name,
+            os_version: page.new_os_version.trim().to_string(),
+            city,
+            anchor_lat: coord.latitude,
+            anchor_lon: coord.longitude,
+            ..self.identity.clone()
+        };
+        if identity.os_version.is_empty() {
+            identity.os_version = model::HeaderIdentity::default().os_version;
         }
+        // 全新设备指纹：device_id / IDFA / MAC / 安装时间，创建后终身复用
+        identity.freshen();
         if let Err(e) = model::save_identity_scoped(Some(&id), &identity) {
             self.status = format!("× 创建失败：{e}");
             return;
@@ -224,7 +335,10 @@ impl App {
         page.new_pass.clear();
         page.adding = false;
         self.status = format!("√ 已添加账号 {username}");
-        self.log.push(&format!("√ [accounts] 新增账号 {username}（设备 {id}）"));
+        self.log.push(&format!(
+            "√ [accounts] 新增账号 {username}（设备 {id} / {} / {}）",
+            identity.device_name, identity.city
+        ));
     }
 
     /// 切换当前账号：把该槽位的设备身份与会话载入主界面。
