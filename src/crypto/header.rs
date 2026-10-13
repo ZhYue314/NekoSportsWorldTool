@@ -90,6 +90,16 @@ impl HeaderIdentity {
         let days = if platform == "android" { 90 } else { 3 };
         now_ms() - days * 86_400_000
     }
+
+    /// 换成一台「新设备」：device_id / IDFA / MAC / 安装时间重新生成，
+    /// 机型、系统版本、城市与锚点保持不变。多账号每个账号调用一次，
+    /// 生成后全生命周期复用（逐次重置会触发 10121 设备风险）。
+    pub fn freshen(&mut self) {
+        self.device_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+        self.idfa = String::new();
+        self.mac_address = random_mac();
+        self.app_install_time = Self::fresh_install_time(&self.platform);
+    }
 }
 
 impl Default for HeaderIdentity {

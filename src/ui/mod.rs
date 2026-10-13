@@ -8,6 +8,7 @@
 //! __SEMESTER__ / __CHEAT__ / __RANK__ / __USER__ / __AI_RECORDS__
 
 pub mod about;
+pub mod accounts;
 pub mod ai;
 pub mod data;
 pub mod device;
@@ -46,6 +47,7 @@ pub const UPDATE_PROG: &str = "__UPDATE_PROG__";
 pub const UPDATE_DONE: &str = "__UPDATE_DONE__";
 pub const FENCE_DONE: &str = "__FENCE_DONE__";
 pub const POINTS_DONE: &str = "__POINTS_DONE__";
+pub const BATCH: &str = "__BATCH__";
 
 /// 提交结果弹窗。
 pub struct PopupInfo {
@@ -65,6 +67,10 @@ pub struct App {
     pub device_buf: HeaderIdentity,
     pub session: Option<Session>,
     pub config: Config,
+    /// 当前账号槽位：Some=多账号模式（设备/会话读写 accounts/<slot>/），None=单账号旧行为。
+    pub slot: Option<String>,
+    pub accounts_page: accounts::AccountsPage,
+    pub batch_busy: bool,
 
     pub username: String,
     pub password: String,
@@ -109,7 +115,9 @@ impl eframe::App for App {
         self.poll_messages();
         #[cfg(target_os = "android")]
         self.poll_device_info();
-        crate::platform::set_keep_screen_on(self.run_busy || self.ai_busy || self.login_busy);
+        crate::platform::set_keep_screen_on(
+            self.run_busy || self.ai_busy || self.login_busy || self.batch_busy,
+        );
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
         // ── 顶栏 ────────────────────────────────────────────────
@@ -276,6 +284,7 @@ impl eframe::App for App {
                 5 => self.draw_device(ui),
                 6 => self.log.render(ui),
                 7 => self.draw_osm_page(ui),
+                8 => self.draw_accounts(ui),
                 _ => self.draw_about(ui),
             }
         });
@@ -321,6 +330,7 @@ impl App {
         let username = config.username.clone();
         let password = config.password.clone();
         let remember = config.remember;
+        let accounts_page = accounts::AccountsPage::new();
 
         let mut app = Self {
             tx: tx.clone(),
@@ -332,6 +342,9 @@ impl App {
             device_buf,
             session: session.is_logged_in().then_some(session),
             config: config.clone(),
+            slot: None,
+            accounts_page,
+            batch_busy: false,
             username,
             password,
             remember,

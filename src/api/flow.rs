@@ -132,7 +132,8 @@ pub fn run_full_flow(
             normal.sample(&mut rng).clamp(-200.0, 200.0) / crate::track::geom::MET_PER_DEG_LNG;
         client.identity.anchor_lat = clat + dlat;
         client.identity.anchor_lon = clng + dlng;
-        if let Err(e) = super::model::save_identity(&client.identity) {
+        if let Err(e) = super::model::save_identity_scoped(client.slot.as_deref(), &client.identity)
+        {
             log(&format!("⚠ 锚点持久化失败: {e}"));
         }
         // 用漂移后的新锚点重存点位缓存，使缓存锚点与持久化锚点一致，避免预览锚点失配。

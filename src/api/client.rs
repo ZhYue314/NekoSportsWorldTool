@@ -21,6 +21,9 @@ pub struct ApiClient {
     pub session: EnvelopeSession,
     pub identity: HeaderIdentity,
     pub login: Option<Session>,
+    /// 账号槽位：Some 时登录会话 / 锚点漂移写入 `accounts/<slot>/`，
+    /// None 写全局文件（单账号旧行为）。只影响落盘位置，不影响协议字段。
+    pub slot: Option<String>,
 }
 
 pub struct RequestOutcome {
@@ -38,7 +41,14 @@ impl ApiClient {
             session: EnvelopeSession::new(),
             identity,
             login,
+            slot: None,
         }
+    }
+
+    /// 指定账号槽位（多账号批处理 / 切换账号后使用）。
+    pub fn with_slot(mut self, slot: Option<String>) -> Self {
+        self.slot = slot;
+        self
     }
 
     fn uid(&self) -> i64 {

@@ -9,7 +9,7 @@ use crate::track::generate_road::RouteMode;
 use crate::update::ReleaseInfo;
 
 impl App {
-    /// 任一后台任务进行中（更新前的打断保护）。
+    /// 任一后台任务进行中（更新前的打断保护 + 单账号操作的互斥）。
     pub fn any_busy(&self) -> bool {
         self.login_busy
             || self.run_busy
@@ -17,6 +17,7 @@ impl App {
             || self.records_busy
             || self.data_busy
             || self.user_busy
+            || self.batch_busy
     }
 
     /// 检查更新；manual=true 时切到关于页并显示状态。
@@ -27,7 +28,7 @@ impl App {
         self.update.checking = true;
         self.update.check_error = None;
         if manual {
-            self.tab = 8;
+            self.tab = 9;
             self.status = "正在检查更新…".into();
         }
         self.spawn_job(move |tx| {
@@ -170,6 +171,10 @@ impl App {
     }
 
     pub(crate) fn do_login(&mut self) {
+        if self.batch_busy {
+            self.status = "批量任务进行中，稍后再登录".into();
+            return;
+        }
         if self.username.is_empty() || self.password.is_empty() {
             self.status = "请填写账号和密码".into();
             return;
@@ -178,19 +183,34 @@ impl App {
         let password = self.password.clone();
         let identity = self.identity.clone();
         let remember = self.remember;
-        self.config.username = username.clone();
-        self.config.password = if remember {
-            password.clone()
-        } else {
-            String::new()
-        };
-        self.config.remember = remember;
-        let _ = model::save_config(&self.config);
+        let slot = self.slot.clone();
+        match slot.as_deref() {
+            // 多账号：凭据写回该账号索引，不动全局 config.json
+            Some(_) => {
+                let mut list = model::load_accounts();
+                if let Some(acc) = list.iter_mut().find(|a| a.username == username) {
+                    acc.password = if remember { password.clone() } else { String::new() };
+                    acc.remember = remember;
+                    let _ = model::save_accounts(&list);
+                }
+            }
+            None => {
+                self.config.username = username.clone();
+                self.config.password = if remember {
+                    password.clone()
+                } else {
+                    String::new()
+                };
+                self.config.remember = remember;
+                let _ = model::save_config(&self.config);
+            }
+        }
         self.login_busy = true;
         self.status = format!("登录中（{username}）…");
         self.spawn_job(move |tx| {
             let mut log = App::logger(tx.clone());
-            let mut client = crate::api::client::ApiClient::new(identity, None);
+            let mut client =
+                crate::api::client::ApiClient::new(identity, None).with_slot(slot);
             let msg = match crate::api::login::login(&mut client, &username, &password, &mut log) {
                 Ok(sess) => {
                     log(&format!(
@@ -222,13 +242,19 @@ impl App {
     }
 
     pub(crate) fn do_logout(&mut self) {
+        if self.batch_busy {
+            self.status = "批量任务进行中，稍后再登出".into();
+            return;
+        }
         let identity = self.identity.clone();
         let session = self.session.clone();
+        let slot = self.slot.clone();
         self.session = None;
         self.spawn_job(move |tx| {
             let mut log = App::logger(tx.clone());
             if let Some(sess) = session {
-                let mut client = crate::api::client::ApiClient::new(identity, Some(sess));
+                let mut client = crate::api::client::ApiClient::new(identity, Some(sess))
+                    .with_slot(slot);
                 crate::api::login::logout(&mut client, &mut log);
             }
         });

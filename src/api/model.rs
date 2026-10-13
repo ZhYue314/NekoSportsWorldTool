@@ -133,17 +133,30 @@ fn exe_dir() -> std::path::PathBuf {
     crate::platform::data_dir()
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
-    let path = exe_dir().join(name);
-    let text = std::fs::read_to_string(path).ok()?;
+fn read_json_in<T: serde::de::DeserializeOwned>(dir: &std::path::Path, name: &str) -> Option<T> {
+    let text = std::fs::read_to_string(dir.join(name)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn write_json<T: serde::Serialize>(name: &str, value: &T) -> Result<(), String> {
-    let path = exe_dir().join(name);
+fn write_json_in<T: serde::Serialize>(
+    dir: &std::path::Path,
+    name: &str,
+    value: &T,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("创建目录 {} 失败: {e}", dir.display()))?;
+    let path = dir.join(name);
     let json =
         serde_json::to_string_pretty(value).map_err(|e| format!("序列化 {name} 失败: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+    read_json_in(&exe_dir(), name)
+}
+
+fn write_json<T: serde::Serialize>(name: &str, value: &T) -> Result<(), String> {
+    write_json_in(&exe_dir(), name, value)
 }
 
 /// 加载设备身份；device_id / app_install_time 缺失时生成一次并立即落盘，
@@ -157,7 +170,12 @@ pub fn load_identity() -> HeaderIdentity {
 }
 
 fn load_identity_for_platform(platform: &str) -> HeaderIdentity {
-    let mut id: HeaderIdentity = read_json("identity.json").unwrap_or_else(|| {
+    load_identity_in(&exe_dir(), platform)
+}
+
+/// 在指定目录读取设备身份；缺失字段补齐后写回该目录（fail-closed：读不到就生成一次）。
+fn load_identity_in(dir: &std::path::Path, platform: &str) -> HeaderIdentity {
+    let mut id: HeaderIdentity = read_json_in(dir, "identity.json").unwrap_or_else(|| {
         let mut identity = HeaderIdentity::default();
         if platform == "android" {
             identity.platform = "android".into();
@@ -182,7 +200,7 @@ fn load_identity_for_platform(platform: &str) -> HeaderIdentity {
         dirty = true;
     }
     if dirty {
-        let _ = save_identity(&id);
+        let _ = write_json_in(dir, "identity.json", &id);
     }
     id
 }
@@ -211,8 +229,28 @@ pub fn identity_with_device_info(
     Ok(updated)
 }
 
-pub fn save_identity(id: &HeaderIdentity) -> Result<(), String> {
-    write_json("identity.json", id)
+/// 槽位目录：`accounts/<id>/`。id 只允许 ASCII 字母数字（自生成的 32 位 hex），
+/// 拒绝任何可能跳出目录的输入。
+fn slot_dir(slot: &str) -> Result<std::path::PathBuf, String> {
+    if slot.is_empty()
+        || slot.len() > 64
+        || !slot.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(format!("非法账号标识: {slot}"));
+    }
+    Ok(exe_dir().join("accounts").join(slot))
+}
+
+fn target_dir(slot: Option<&str>) -> Result<std::path::PathBuf, String> {
+    match slot {
+        None => Ok(exe_dir()),
+        Some(id) => slot_dir(id),
+    }
+}
+
+/// 设备身份落盘（slot=None 写全局 identity.json，Some 写该账号槽位）。
+pub fn save_identity_scoped(slot: Option<&str>, id: &HeaderIdentity) -> Result<(), String> {
+    write_json_in(&target_dir(slot)?, "identity.json", id)
 }
 
 /// AI 项目列表永久缓存：拉取成功即落盘，网络异常时兜底展示。
@@ -224,16 +262,85 @@ pub fn save_ai_sports(list: &[crate::api::ai::AiSport]) -> Result<(), String> {
     write_json("ai_sports.json", &list.to_vec())
 }
 
+pub fn load_session_scoped(slot: Option<&str>) -> Session {
+    match target_dir(slot) {
+        Ok(dir) => read_json_in(&dir, "session.json").unwrap_or_default(),
+        Err(_) => Session::default(),
+    }
+}
+
+pub fn save_session_scoped(slot: Option<&str>, s: &Session) -> Result<(), String> {
+    write_json_in(&target_dir(slot)?, "session.json", s)
+}
+
+pub fn clear_session_scoped(slot: Option<&str>) {
+    if let Ok(dir) = target_dir(slot) {
+        let _ = std::fs::remove_file(dir.join("session.json"));
+    }
+}
+
 pub fn load_session() -> Session {
-    read_json("session.json").unwrap_or_default()
+    load_session_scoped(None)
 }
 
-pub fn save_session(s: &Session) -> Result<(), String> {
-    write_json("session.json", s)
+// ── 多账号（accounts.json + accounts/<id>/{identity,session}.json）──────
+
+/// 账号索引项。设备身份与会话不在此文件，见各自槽位目录。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AccountEntry {
+    pub id: String,
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub remember: bool,
+    /// 展示名：登录成功后写入昵称；为空时回退 username。
+    #[serde(default)]
+    pub label: String,
 }
 
-pub fn clear_session() {
-    let _ = std::fs::remove_file(exe_dir().join("session.json"));
+impl AccountEntry {
+    pub fn display(&self) -> &str {
+        if self.label.is_empty() {
+            &self.username
+        } else {
+            &self.label
+        }
+    }
+}
+
+pub fn load_accounts() -> Vec<AccountEntry> {
+    read_json("accounts.json").unwrap_or_default()
+}
+
+pub fn save_accounts(list: &[AccountEntry]) -> Result<(), String> {
+    write_json("accounts.json", &list.to_vec())
+}
+
+pub fn new_account_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// 读取账号槽位的设备身份；槽位文件不存在时生成一份并落盘（fail-closed：
+/// 绝不回退到全局 identity.json，避免多个账号共用同一设备）。
+pub fn load_identity_of(slot: &str) -> Result<HeaderIdentity, String> {
+    let dir = slot_dir(slot)?;
+    let platform = if cfg!(target_os = "android") { "android" } else { "ios" };
+    Ok(load_identity_in(&dir, platform))
+}
+
+pub fn load_session_of(slot: &str) -> Session {
+    match slot_dir(slot) {
+        Ok(dir) => read_json_in(&dir, "session.json").unwrap_or_default(),
+        Err(_) => Session::default(),
+    }
+}
+
+/// 删除账号槽位目录（accounts.json 的索引由调用方自行移除）。
+pub fn remove_slot(slot: &str) {
+    if let Ok(dir) = slot_dir(slot) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 pub fn load_config() -> Config {
@@ -310,7 +417,7 @@ mod storage_tests {
             existing.device_name,
             "preview must not save implicitly"
         );
-        save_identity(&imported).unwrap();
+        save_identity_scoped(None, &imported).unwrap();
         let stored: serde_json::Value = read_json("identity.json").unwrap();
         assert_eq!(
             stored.get("manufacturer").and_then(|value| value.as_str()),
@@ -375,11 +482,11 @@ mod storage_tests {
             token: "test-only-token".into(),
             ..Default::default()
         };
-        save_session(&session).unwrap();
+        save_session_scoped(None, &session).unwrap();
         assert!(directory.join("session.json").is_file());
         assert_eq!(load_session().uid, 123);
         assert_eq!(load_session().token, session.token);
-        clear_session();
+        clear_session_scoped(None);
         assert!(!directory.join("session.json").exists());
         assert_eq!(load_session().uid, 0);
     }

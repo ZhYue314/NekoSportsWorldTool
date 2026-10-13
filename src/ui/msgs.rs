@@ -29,6 +29,7 @@ impl App {
         let mut update_chk = None;
         let mut update_prog = None;
         let mut update_done = None;
+        let mut batch_msgs: Vec<serde_json::Value> = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             if let Some(v) = msg.strip_prefix(IP) {
                 done_ip = Some(v.to_string());
@@ -74,6 +75,10 @@ impl App {
                 update_prog = Some(v.to_string());
             } else if let Some(v) = msg.strip_prefix(UPDATE_DONE) {
                 update_done = Some(v.to_string());
+            } else if let Some(v) = msg.strip_prefix(super::BATCH) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(v) {
+                    batch_msgs.push(val);
+                }
             } else {
                 self.log.push(&msg);
             }
@@ -119,6 +124,12 @@ impl App {
                     .get("session")
                     .and_then(|s| serde_json::from_value::<model::Session>(s.clone()).ok())
                 {
+                    if let Some(id) = self.slot.clone() {
+                        super::accounts::note_login(&sess.name, &sess.username);
+                        self.accounts_page
+                            .status
+                            .insert(id, format!("√ 已登录 {}", sess.name));
+                    }
                     self.session = Some(sess);
                     self.status = format!(
                         "已登录：{}",
@@ -129,7 +140,7 @@ impl App {
                     );
                 } else {
                     // 兜底：从磁盘读（老版本消息格式）
-                    let sess = model::load_session();
+                    let sess = model::load_session_scoped(self.slot.as_deref());
                     if sess.is_logged_in() {
                         self.session = Some(sess);
                         self.status = format!(
@@ -169,7 +180,11 @@ impl App {
                 self.refresh_data_page();
                 // 提交末尾会随机漂移锚点并持久化，这里重载身份让 UI 锚点与磁盘一致，
                 // 并触发路线预览重算（点位缓存已在漂移后用新锚点重存）。
-                self.identity = model::load_identity();
+                self.identity = match self.slot.as_deref() {
+                    Some(id) => model::load_identity_of(id)
+                        .unwrap_or_else(|_| self.identity.clone()),
+                    None => model::load_identity(),
+                };
                 self.run_page.preview_stale = true;
             } else {
                 self.status = format!("跑步提交失败：{}", val["message"].as_str().unwrap_or(""));
@@ -338,6 +353,29 @@ impl App {
                     title: "更新失败".into(),
                     lines: vec![msg.to_string()],
                 });
+            }
+        }
+        // 批量进度：逐条累积，避免一次轮询内后到的消息覆盖前一条
+        for val in batch_msgs {
+            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                if let Some(s) = val.get("status").and_then(|v| v.as_str()) {
+                    self.accounts_page.status.insert(id.to_string(), s.to_string());
+                }
+            }
+            if let Some(done) = val.get("done").and_then(|v| v.as_u64()) {
+                self.accounts_page.batch_done = done as usize;
+            }
+            if let Some(total) = val.get("total").and_then(|v| v.as_u64()) {
+                self.accounts_page.batch_total = total as usize;
+            }
+            if val.get("finished").and_then(|v| v.as_bool()).unwrap_or(false) {
+                self.accounts_page.batch_running = false;
+                self.batch_busy = false;
+                self.status = format!(
+                    "√ 批量任务完成：{} 个账号",
+                    self.accounts_page.batch_total
+                );
+                self.log.push("[batch] 全部账号处理完毕");
             }
         }
         if got_semester || got_cheat || got_rank {

@@ -444,7 +444,7 @@ impl App {
         self.draw_run_map(ui);
 
         ui.add_space(8.0);
-        let enabled = !self.run_busy && self.session.is_some();
+        let enabled = !self.run_busy && !self.batch_busy && self.session.is_some();
         let btn = if self.run_busy {
             theme::primary_btn("提交中…")
         } else {
@@ -722,6 +722,7 @@ impl App {
         let _ = crate::api::model::save_config(&self.config);
 
         let identity = self.identity.clone();
+        let slot = self.slot.clone();
         let session = match self.session.clone() {
             Some(s) => s,
             None => {
@@ -734,7 +735,8 @@ impl App {
         let seed = plan.seed;
         self.spawn_job(move |tx| {
             let mut log = App::logger(tx.clone());
-            let mut client = crate::api::client::ApiClient::new(identity, Some(session));
+            let mut client =
+                crate::api::client::ApiClient::new(identity, Some(session)).with_slot(slot);
             let params = crate::api::flow::RunParams {
                 dist,
                 dur,

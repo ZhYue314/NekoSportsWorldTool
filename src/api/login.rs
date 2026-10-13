@@ -162,7 +162,7 @@ pub fn login(
         device_id,
         profile: super::client::parse_data_field(&biz),
     };
-    if let Err(e) = super::model::save_session(&sess) {
+    if let Err(e) = super::model::save_session_scoped(client.slot.as_deref(), &sess) {
         eprintln!("[login] 会话保存失败: {e}");
     }
     eprintln!(
@@ -187,7 +187,7 @@ pub fn logout(client: &mut ApiClient, log: &mut dyn FnMut(&str)) {
         let _ = client.call("POST", LOGOUT_PATH, "{}", &[]);
         log(&format!("[logout] 已请求登出 uid={}", sess.uid));
     }
-    super::model::clear_session();
+    super::model::clear_session_scoped(client.slot.as_deref());
     log("[logout] 本地  已删除");
 }
 

@@ -34,7 +34,10 @@ impl App {
             Ok(updated) => {
                 self.device_buf = updated;
                 if reply.initial {
-                    match crate::api::model::save_identity(&self.device_buf) {
+                    match crate::api::model::save_identity_scoped(
+                        self.slot.as_deref(),
+                        &self.device_buf,
+                    ) {
                         Ok(()) => {
                             self.identity = self.device_buf.clone();
                             crate::android::complete_device_info();
@@ -160,7 +163,10 @@ impl App {
         ui.add_space(8.0);
         mobile::row(ui, |ui| {
             if ui.add(theme::primary_btn("保存")).clicked() {
-                match crate::api::model::save_identity(&self.device_buf) {
+                match crate::api::model::save_identity_scoped(
+                    self.slot.as_deref(),
+                    &self.device_buf,
+                ) {
                     Ok(()) => {
                         self.identity = self.device_buf.clone();
                         self.status = "√ 设备身份已保存并生效".into();

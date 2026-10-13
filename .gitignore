@@ -7,6 +7,8 @@ nekosportsworldtool.log*
 /session.json
 /config.json
 /identity.json
+/accounts.json
+/accounts/
 /points_cache.json
 /semester_result.json
 /rank_result.json
