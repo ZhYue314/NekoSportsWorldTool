@@ -232,7 +232,7 @@ fn location_fields_changed(saved: &HeaderIdentity, pending: &HeaderIdentity) -> 
 }
 
 /// 整套随机：uuid v4 设备 ID（大写）；机型/系统按平台池抽取。
-fn randomize(buf: &mut HeaderIdentity, platform: &str) {
+pub(super) fn randomize(buf: &mut HeaderIdentity, platform: &str) {
     buf.manufacturer.clear();
     buf.device_id = uuid::Uuid::new_v4().to_string().to_uppercase();
     buf.app_install_time = HeaderIdentity::fresh_install_time(platform);

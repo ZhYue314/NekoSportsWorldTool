@@ -1,8 +1,9 @@
 //! 账号页：多账号管理 + 批量链（登录 → 自查 → 跑步 → 登出）。
 //!
-//! 存储：`accounts.json`（索引 + 凭据）+ `accounts/<id>/{identity,session}.json`。
-//! 每账号一份独立设备身份（首次生成后终身复用）；批处理严格串行 + 随机间隔，
-//! 避免设备/会话错配与同 IP 时间聚集。
+//! 存储：`accounts.json`（索引 + 凭据）+ `accounts/<账号>/{identity,session}.json`
+//!（槽位目录名取账号本身，老索引仍是 uuid hex）。每账号一份独立设备身份，
+//! 首次生成后终身复用；批处理严格串行 + 随机间隔，避免设备/会话错配与
+//! 同 IP 时间聚集。
 
 use super::{mobile, theme, App, BATCH};
 use crate::api::model::{self, AccountEntry, Config};
@@ -25,17 +26,9 @@ pub struct AccountsPage {
     pub adding: bool,
     pub new_user: String,
     pub new_pass: String,
-    /// 新账号的设备与位置（创建时写入槽位 identity；UUID 留空则自动生成，
-    /// IDFA / IMEI 留空则不上报）。
-    pub new_platform: String,
-    pub new_device_name: String,
-    pub new_os_version: String,
-    pub new_city: String,
-    pub new_lat: String,
-    pub new_lon: String,
-    pub new_device_id: String,
-    pub new_idfa: String,
-    pub new_imei: String,
+    /// 新账号的设备与位置缓冲（设备信息页同款字段，点「创建账号」才落盘）。
+    /// device_id 留空 = 创建时自动生成与当前设备不同的新 UUID。
+    pub new_identity: model::HeaderIdentity,
     /// 展开了「详情」的账号。
     pub expanded: std::collections::HashSet<String>,
     pub batch_running: bool,
@@ -89,25 +82,18 @@ impl AccountsPage {
         self.info = info;
     }
 
-    /// 用给定设备身份填充新建表单（打开添加面板 / 点「填充当前设备」时）。
+    /// 用当前设备身份填充表单；UUID 清空，保证新账号不会和当前设备同 ID。
     fn fill_from(&mut self, identity: &model::HeaderIdentity) {
-        self.new_platform = identity.platform.clone();
-        self.new_device_name = identity.device_name.clone();
-        self.new_os_version = identity.os_version.clone();
-        self.new_city = identity.city.clone();
-        self.new_lat = format!("{:.6}", identity.anchor_lat);
-        self.new_lon = format!("{:.6}", identity.anchor_lon);
-        self.new_device_id = identity.device_id.clone();
-        self.new_idfa = identity.idfa.clone();
-        self.new_imei = identity.imei.clone();
+        self.new_identity = identity.clone();
+        self.new_identity.device_id = String::new();
     }
 
-    /// 只填位置为代码默认值（都匀）。
+    /// 只把位置填成代码默认值（都匀）。
     fn fill_default_place(&mut self) {
         let d = model::HeaderIdentity::default();
-        self.new_city = d.city;
-        self.new_lat = format!("{:.6}", d.anchor_lat);
-        self.new_lon = format!("{:.6}", d.anchor_lon);
+        self.new_identity.city = d.city;
+        self.new_identity.anchor_lat = d.anchor_lat;
+        self.new_identity.anchor_lon = d.anchor_lon;
     }
 }
 
@@ -119,6 +105,27 @@ pub fn note_login(name: &str, username: &str) {
     };
     acc.label = name.to_string();
     let _ = model::save_accounts(&list);
+}
+
+/// 槽位目录名 = 账号本身（保留字母数字与 -_，重名加 -2/-3；过滤后为空回退随机 id）。
+fn unique_slot_id(username: &str, taken: &[AccountEntry]) -> String {
+    let base: String = username
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(56)
+        .collect();
+    let base = if base.is_empty() {
+        model::new_account_id()
+    } else {
+        base
+    };
+    let mut id = base.clone();
+    let mut n = 2;
+    while taken.iter().any(|a| a.id == id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
 }
 
 impl App {
@@ -170,6 +177,7 @@ impl App {
         let mut toggle_add = false;
         let mut fill_now = false;
         let mut fill_default_place = false;
+        let mut randomize_now = false;
         mobile::row(ui, |ui| {
             if ui.button(if page.adding { "收起添加" } else { "添加账号" }).clicked() {
                 toggle_add = true;
@@ -183,42 +191,50 @@ impl App {
             }
         }
         if page.adding {
-            egui::Grid::new("account_add")
-                .num_columns(2)
-                .spacing([10.0, 3.0])
-                .show(ui, |ui| {
-                    ui.label("账号：");
-                    mobile::text_edit(ui, "acc_user", &mut page.new_user, InputKind::Text, 240.0);
-                    ui.end_row();
-                    ui.label("密码：");
-                    mobile::text_edit(
-                        ui,
-                        "acc_pass",
-                        &mut page.new_pass,
-                        InputKind::Password,
-                        240.0,
-                    );
-                    ui.end_row();
-                });
+            // 账号 / 密码 一行
+            mobile::row(ui, |ui| {
+                ui.label("账号：");
+                mobile::text_edit(ui, "acc_user", &mut page.new_user, InputKind::Text, 200.0);
+                ui.label("密码：");
+                mobile::text_edit(ui, "acc_pass", &mut page.new_pass, InputKind::Password, 200.0);
+            });
 
             ui.add_space(4.0);
             mobile::row(ui, |ui| {
-                ui.label(egui::RichText::new("设备与位置").strong());
+                ui.label(egui::RichText::new("设备信息").strong());
+                if ui
+                    .button("随机生成")
+                    .on_hover_text("随机 UUID / 机型 / 系统版本 / IDFA，保留位置")
+                    .clicked()
+                {
+                    randomize_now = true;
+                }
                 if ui.button("填充当前设备").clicked() {
                     fill_now = true;
                 }
                 if ui.button("默认位置").clicked() {
                     fill_default_place = true;
                 }
-                ui.colored_label(theme::text_dim(), "UUID 留空自动生成；MAC / 安装时间创建时生成");
             });
+            if randomize_now {
+                let platform = page.new_identity.platform.clone();
+                super::device::randomize(&mut page.new_identity, &platform);
+            }
             if fill_now {
                 page.fill_from(&self.identity);
             }
             if fill_default_place {
                 page.fill_default_place();
             }
-            // 左：平台 / 机型 / 系统版本；右：城市 / 纬度 / 经度
+            ui.colored_label(
+                theme::text_dim(),
+                "UUID 留空则创建时自动生成新设备；IDFA / IMEI 留空则不上报；MAC / 安装时间创建时生成",
+            );
+
+            let is_ios = page.new_identity.platform != "android";
+            let ad_id_label = if is_ios { "IDFA（可空）" } else { "IMEI（可空）" };
+            let name_label = if is_ios { "设备名" } else { "机型" };
+            // 左：设备信息（设备信息页同款字段）；右：位置
             ui.columns(2, |cols| {
                 egui::Grid::new("account_device")
                     .num_columns(2)
@@ -226,32 +242,64 @@ impl App {
                     .show(&mut cols[0], |ui| {
                         ui.label("平台：");
                         ui.horizontal(|ui| {
-                            ui.selectable_value(&mut page.new_platform, "ios".to_string(), "iOS");
                             ui.selectable_value(
-                                &mut page.new_platform,
+                                &mut page.new_identity.platform,
+                                "ios".to_string(),
+                                "iOS",
+                            );
+                            ui.selectable_value(
+                                &mut page.new_identity.platform,
                                 "android".to_string(),
                                 "Android",
                             );
                         });
                         ui.end_row();
-                        ui.label("机型：");
+                        ui.label("UUID：");
+                        mobile::text_edit(
+                            ui,
+                            "acc_uuid",
+                            &mut page.new_identity.device_id,
+                            InputKind::Text,
+                            170.0,
+                        );
+                        ui.end_row();
+                        ui.label(ad_id_label);
+                        let ad_buf: &mut String = if is_ios {
+                            &mut page.new_identity.idfa
+                        } else {
+                            &mut page.new_identity.imei
+                        };
+                        mobile::text_edit(ui, "acc_adid", ad_buf, InputKind::Text, 170.0);
+                        ui.end_row();
+                        ui.label(name_label);
                         mobile::text_edit(
                             ui,
                             "acc_model",
-                            &mut page.new_device_name,
+                            &mut page.new_identity.device_name,
                             InputKind::Text,
-                            150.0,
+                            170.0,
                         );
                         ui.end_row();
                         ui.label("系统版本：");
                         mobile::text_edit(
                             ui,
                             "acc_os",
-                            &mut page.new_os_version,
+                            &mut page.new_identity.os_version,
                             InputKind::Text,
-                            150.0,
+                            170.0,
                         );
                         ui.end_row();
+                        if !is_ios {
+                            ui.label("品牌（可空）：");
+                            mobile::text_edit(
+                                ui,
+                                "acc_brand",
+                                &mut page.new_identity.manufacturer,
+                                InputKind::Text,
+                                170.0,
+                            );
+                            ui.end_row();
+                        }
                     });
                 egui::Grid::new("account_place")
                     .num_columns(2)
@@ -261,60 +309,39 @@ impl App {
                         mobile::text_edit(
                             ui,
                             "acc_city",
-                            &mut page.new_city,
+                            &mut page.new_identity.city,
                             InputKind::Text,
                             150.0,
                         );
                         ui.end_row();
                         ui.label("纬度：");
-                        mobile::text_edit(
+                        mobile::drag_f64(
                             ui,
                             "acc_lat",
-                            &mut page.new_lat,
-                            InputKind::Decimal,
-                            150.0,
+                            &mut page.new_identity.anchor_lat,
+                            -90.0..=90.0,
+                            0.00001,
+                            6,
                         );
                         ui.end_row();
                         ui.label("经度：");
-                        mobile::text_edit(
+                        mobile::drag_f64(
                             ui,
                             "acc_lon",
-                            &mut page.new_lon,
-                            InputKind::Decimal,
-                            150.0,
+                            &mut page.new_identity.anchor_lon,
+                            -180.0..=180.0,
+                            0.00001,
+                            6,
                         );
                         ui.end_row();
                     });
             });
 
-            ui.add_space(4.0);
-            egui::Grid::new("account_ids")
-                .num_columns(2)
-                .spacing([10.0, 3.0])
-                .show(ui, |ui| {
-                    ui.label("UUID：");
-                    mobile::text_edit(
-                        ui,
-                        "acc_uuid",
-                        &mut page.new_device_id,
-                        InputKind::Text,
-                        240.0,
-                    );
-                    ui.end_row();
-                    ui.label("IDFA：");
-                    mobile::text_edit(ui, "acc_idfa", &mut page.new_idfa, InputKind::Text, 240.0);
-                    ui.end_row();
-                    ui.label("IMEI：");
-                    mobile::text_edit(ui, "acc_imei", &mut page.new_imei, InputKind::Text, 240.0);
-                    ui.end_row();
-                });
-
             let create = !self.batch_busy
                 && !page.new_user.trim().is_empty()
                 && !page.new_pass.is_empty()
-                && !page.new_city.trim().is_empty()
-                && !page.new_lat.trim().is_empty()
-                && !page.new_lon.trim().is_empty();
+                && !page.new_identity.city.trim().is_empty()
+                && !page.new_identity.device_name.trim().is_empty();
             if ui
                 .add_enabled(create, theme::primary_btn("创建账号"))
                 .clicked()
@@ -412,60 +439,46 @@ impl App {
         }
     }
 
-    /// 创建账号：独立槽位 + 全新设备指纹（设备/城市/锚点取表单值）。
+    /// 创建账号：独立槽位 + 设备身份（取表单值；UUID 留空则生成新设备），
+    /// 槽位目录名取账号本身。
     fn create_account(&mut self, page: &mut AccountsPage) {
         let username = page.new_user.trim().to_string();
         let password = page.new_pass.clone();
-        let city = page.new_city.trim().to_string();
-        let device_name = page.new_device_name.trim().to_string();
-        let lat: f64 = page.new_lat.trim().parse().unwrap_or(f64::NAN);
-        let lon: f64 = page.new_lon.trim().parse().unwrap_or(f64::NAN);
+        let mut identity = page.new_identity.clone();
+        identity.city = identity.city.trim().to_string();
+        identity.device_name = identity.device_name.trim().to_string();
+        identity.device_id = identity.device_id.trim().to_uppercase();
+        identity.idfa = identity.idfa.trim().to_string();
+        identity.imei = identity.imei.trim().to_string();
         if username.is_empty() || password.is_empty() {
             self.status = "请填写账号和密码".into();
             return;
         }
-        if device_name.is_empty() {
+        if identity.device_name.is_empty() {
             self.status = "请填写机型".into();
             return;
         }
-        if city.is_empty() {
+        if identity.city.is_empty() {
             self.status = "请填写城市".into();
             return;
         }
-        let coord = match crate::location::Coordinate::new(lat, lon, 0.0) {
-            Ok(c) => c,
-            Err(e) => {
-                self.status = format!("经纬度无效：{e}");
-                return;
-            }
-        };
+        if let Err(e) =
+            crate::location::Coordinate::new(identity.anchor_lat, identity.anchor_lon, 0.0)
+        {
+            self.status = format!("经纬度无效：{e}");
+            return;
+        }
         let mut list = model::load_accounts();
         if list.iter().any(|a| a.username == username) {
             self.status = "该账号已存在".into();
             return;
         }
-        let id = model::new_account_id();
-        let mut identity = model::HeaderIdentity {
-            platform: page.new_platform.clone(),
-            device_name,
-            os_version: page.new_os_version.trim().to_string(),
-            city,
-            anchor_lat: coord.latitude,
-            anchor_lon: coord.longitude,
-            ..self.identity.clone()
-        };
         if identity.os_version.is_empty() {
             identity.os_version = model::HeaderIdentity::default().os_version;
         }
-        // UUID 留空则生成；IDFA / IMEI 按表单（留空不上报）
-        identity.device_id = if page.new_device_id.trim().is_empty() {
-            String::new()
-        } else {
-            page.new_device_id.trim().to_uppercase()
-        };
-        identity.idfa = page.new_idfa.trim().to_string();
-        identity.imei = page.new_imei.trim().to_string();
-        // 补齐设备指纹：device_id 为空才生成，MAC / 安装时间新生成，创建后终身复用
+        // 槽位目录名 = 账号（老账号索引里仍是 uuid hex，不受影响）
+        let id = unique_slot_id(&username, &list);
+        // UUID 留空则生成新设备；MAC / 安装时间重新生成，创建后终身复用
         identity.freshen();
         if let Err(e) = model::save_identity_scoped(Some(&id), &identity) {
             self.status = format!("× 创建失败：{e}");
@@ -745,6 +758,18 @@ fn random_start_today(dur_secs: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 槽位目录名：账号保留字母数字，重名加序号，全被过滤时回退随机 id。
+    #[test]
+    fn slot_id_uses_username_and_avoids_collisions() {
+        let taken = vec![AccountEntry {
+            id: "138000".into(),
+            ..Default::default()
+        }];
+        assert_eq!(unique_slot_id("138000", &taken), "138000-2");
+        assert_eq!(unique_slot_id("138 111", &[]), "138111");
+        assert!(!unique_slot_id("中文账号", &[]).is_empty());
+    }
 
     /// 开始时刻必须不晚于 now - 用时（今天窗口失效时也不产生未来时间）。
     #[test]
