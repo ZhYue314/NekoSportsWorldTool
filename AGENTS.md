@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## 项目文档
+
+- **项目书（进度 SSOT）**：仓库根 [`PROJECT.md`](PROJECT.md) —— 功能范围、当前状态、数据结构、
+  构建部署、已知限制、待实测清单、变更记录。**动手前先看它，改完记得同步它**。
+
 ## Git 远端约定（强制）
 
 本仓库是 fork，两个 remote 各司其职，**不允许改动 remote 指向**：
@@ -42,4 +47,4 @@ git push origin main                    # 推回自己的 fork
 - CI 使用 `x86_64-pc-windows-msvc`（见 `.github/workflows/release.yml`），本机需 MSVC Build Tools 才能 `cargo build`
 - 本机 gnu 工具链只能用于 `cargo check` / `cargo test --lib`；
   `cargo build` 会因既有问题失败（cdylib 导出符号 > 65535，PE 序号上限）
-- 详见 `docs/multi-account-progress.md`
+- 详见 `PROJECT.md` §五 / §六
