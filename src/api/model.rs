@@ -297,6 +297,13 @@ pub struct AccountEntry {
     /// 展示名：登录成功后写入昵称；为空时回退 username。
     #[serde(default)]
     pub label: String,
+    /// 是否参与批量任务（勾选框）。老索引缺字段时默认参与。
+    #[serde(default = "default_account_enabled")]
+    pub enabled: bool,
+}
+
+fn default_account_enabled() -> bool {
+    true
 }
 
 impl AccountEntry {

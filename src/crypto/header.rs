@@ -57,9 +57,9 @@ pub fn random_mac() -> String {
 fn default_platform() -> String { "ios".into() }
 fn default_os_version() -> String { "26.5.2".into() }
 fn default_device_name() -> String { "iPhone".into() }
-fn default_anchor_lat() -> f64 { 38.901678 }
-fn default_anchor_lon() -> f64 { 121.540241 }
-fn default_city() -> String { "大连市".into() }
+fn default_anchor_lat() -> f64 { 26.286711 }
+fn default_anchor_lon() -> f64 { 107.511853 }
+fn default_city() -> String { "都匀市".into() }
 
 impl HeaderIdentity {
     /// 返回设备页配置的锚点，并执行统一边界校验。
@@ -68,9 +68,10 @@ impl HeaderIdentity {
     }
 
     /// 旧版本首次启动会写入大连默认值。未明确配置前禁止将它作为异地跑步位置使用。
+    /// 新默认（都匀）视为已配置，可直接提交。
     pub fn has_unconfigured_default_location(&self) -> bool {
         self.city.trim().is_empty()
-            || self.city.trim() == crate::location::default_city()
+            || self.city.trim() == crate::location::legacy_default_city()
             || self.anchor_coordinate().map(|c| c.is_default_dalian()).unwrap_or(true)
     }
 
@@ -345,7 +346,16 @@ mod tests {
 
     #[test]
     fn legacy_dalian_defaults_are_not_accepted_for_a_run() {
-        assert!(HeaderIdentity::default().has_unconfigured_default_location());
+        // 新默认（都匀）视为已配置，可直接提交
+        assert!(!HeaderIdentity::default().has_unconfigured_default_location());
+        // 旧版大连默认仍是「未配置」
+        let legacy = HeaderIdentity {
+            city: "大连市".into(),
+            anchor_lat: 38.901678,
+            anchor_lon: 121.540241,
+            ..Default::default()
+        };
+        assert!(legacy.has_unconfigured_default_location());
         let configured = HeaderIdentity {
             city: "石家庄市".into(),
             anchor_lat: 38.0428,

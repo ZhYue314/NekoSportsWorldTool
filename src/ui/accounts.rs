@@ -20,6 +20,8 @@ pub struct AccountsPage {
     pub entries: Vec<AccountEntry>,
     /// 账号 id → 最近一次操作状态。
     pub status: HashMap<String, String>,
+    /// 账号 id → 设备/位置明细（避免每帧读盘）。
+    pub info: HashMap<String, String>,
     pub adding: bool,
     pub new_user: String,
     pub new_pass: String,
@@ -37,10 +39,34 @@ pub struct AccountsPage {
 
 impl AccountsPage {
     pub fn new() -> Self {
-        Self {
+        let mut page = Self {
             entries: model::load_accounts(),
             ..Default::default()
+        };
+        page.refresh_info();
+        page
+    }
+
+    /// 读取各账号槽位的设备身份，生成明细文本（设备 ID / 机型 / 位置）。
+    fn refresh_info(&mut self) {
+        let mut info = HashMap::new();
+        for e in &self.entries {
+            let text = match model::load_identity_of(&e.id) {
+                Ok(id) => format!(
+                    "设备 {} · {}（{} {}）· {}（{:.6},{:.6}）",
+                    id.device_id,
+                    id.device_name,
+                    if id.platform == "android" { "Android" } else { "iOS" },
+                    id.os_version,
+                    id.city,
+                    id.anchor_lat,
+                    id.anchor_lon,
+                ),
+                Err(err) => format!("× 读取设备失败：{err}"),
+            };
+            info.insert(e.id.clone(), text);
         }
+        self.info = info;
     }
 
     /// 用给定设备身份填充新建表单（打开添加面板 / 点「填充当前设备」时）。
@@ -82,20 +108,26 @@ impl App {
         ui.add_space(8.0);
 
         // ── 批量 ───────────────────────────────────────────────
+        let checked = page.entries.iter().filter(|e| e.enabled).count();
         let mut start = false;
         mobile::row(ui, |ui| {
             let running = page.batch_running;
             let label = if running {
                 format!("批量进行中 {}/{}", page.batch_done, page.batch_total)
             } else {
-                "一键：登录 → 自查 → 跑步 → 登出".to_string()
+                format!(
+                    "一键：登录 → 自查 → 跑步 → 登出（{checked}/{}）",
+                    page.entries.len()
+                )
             };
             let btn = theme::primary_btn(&label);
-            if ui.add_enabled(!running && !page.entries.is_empty(), btn).clicked() {
+            if ui.add_enabled(!running && checked > 0, btn).clicked() {
                 start = true;
             }
             if running {
                 ui.colored_label(theme::warn(), "批量运行中，单账号操作已锁定");
+            } else if checked == 0 && !page.entries.is_empty() {
+                ui.colored_label(theme::warn(), "未勾选任何账号");
             }
         });
         if start {
@@ -220,14 +252,24 @@ impl App {
         ui.separator();
         let mut switch_to: Option<String> = None;
         let mut delete: Option<String> = None;
+        let mut enable_change: Option<(String, bool)> = None;
         for i in 0..page.entries.len() {
             let id = page.entries[i].id.clone();
             let title = page.entries[i].display().to_string();
             let username = page.entries[i].username.clone();
             let status = page.status.get(&id).cloned().unwrap_or_default();
+            let detail = page.info.get(&id).cloned().unwrap_or_default();
             let active = self.slot.as_deref() == Some(id.as_str());
             let locked = self.batch_busy || page.batch_running;
             mobile::row(ui, |ui| {
+                let mut checked = page.entries[i].enabled;
+                if ui
+                    .checkbox(&mut checked, "")
+                    .on_hover_text("勾选后才参与一键批量")
+                    .changed()
+                {
+                    enable_change = Some((id.clone(), checked));
+                }
                 let mark = if active { "● " } else { "○ " };
                 ui.label(egui::RichText::new(format!("{mark}{title}")).strong());
                 ui.monospace(&username);
@@ -256,9 +298,21 @@ impl App {
                     delete = Some(id.clone());
                 }
             });
+            if !detail.is_empty() {
+                mobile::row(ui, |ui| {
+                    ui.add_space(24.0);
+                    ui.colored_label(theme::text_dim(), &detail);
+                });
+            }
         }
         if page.entries.is_empty() {
             ui.colored_label(theme::text_dim(), "还没有账号，点上方「添加账号」。");
+        }
+        if let Some((id, enabled)) = enable_change {
+            if let Some(e) = page.entries.iter_mut().find(|e| e.id == id) {
+                e.enabled = enabled;
+            }
+            let _ = model::save_accounts(&page.entries);
         }
         if let Some(id) = switch_to {
             self.switch_account(&id);
@@ -325,19 +379,21 @@ impl App {
             password,
             remember: true,
             label: String::new(),
+            enabled: true,
         });
         if let Err(e) = model::save_accounts(&list) {
             self.status = format!("× 保存账号索引失败：{e}");
             return;
         }
         page.entries = list;
+        page.refresh_info();
         page.new_user.clear();
         page.new_pass.clear();
         page.adding = false;
-        self.status = format!("√ 已添加账号 {username}");
+        self.status = format!("√ 已添加账号 {username}（设备 {}）", identity.device_id);
         self.log.push(&format!(
-            "√ [accounts] 新增账号 {username}（设备 {id} / {} / {}）",
-            identity.device_name, identity.city
+            "√ [accounts] 新增账号 {username}（槽位 {id} / 设备 {} / {} / {}）",
+            identity.device_id, identity.device_name, identity.city
         ));
     }
 
@@ -355,12 +411,18 @@ impl App {
         self.device_buf = identity;
         self.session = session.is_logged_in().then_some(session);
         self.slot = Some(id.to_string());
-        let label = model::load_accounts()
-            .iter()
-            .find(|a| a.id == id)
+        let entry = model::load_accounts().into_iter().find(|a| a.id == id);
+        let label = entry
+            .as_ref()
             .map(|a| a.display().to_string())
             .unwrap_or_else(|| id.to_string());
-        self.status = format!("已切换到账号 {label}");
+        // 顶栏输入框跟着切到该账号，后续登录/登出都作用在它身上
+        if let Some(e) = &entry {
+            self.username = e.username.clone();
+            self.password = e.password.clone();
+            self.remember = e.remember;
+        }
+        self.status = format!("已切换到账号 {label}（设备 {}）", self.identity.device_id);
         if self.session.is_some() {
             self.refresh_data_page();
             self.refresh_records();
@@ -390,6 +452,7 @@ impl App {
         model::remove_slot(id);
         page.entries = list;
         page.status.remove(id);
+        page.info.remove(id);
         if self.slot.as_deref() == Some(id) {
             // 当前账号被删：退回全局单账号状态
             self.slot = None;
@@ -406,11 +469,17 @@ impl App {
         if page.batch_running || self.batch_busy {
             return;
         }
-        if page.entries.is_empty() {
-            self.status = "没有账号".into();
+        // 只处理勾选了的账号
+        let entries: Vec<AccountEntry> = page
+            .entries
+            .iter()
+            .filter(|e| e.enabled)
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            self.status = "没有勾选任何账号".into();
             return;
         }
-        let entries = page.entries.clone();
         // 跑步参数取全局配置（距离/配速/海拔/人脸/路线），与单账号跑步页一致
         let cfg = model::load_config();
         page.batch_running = true;

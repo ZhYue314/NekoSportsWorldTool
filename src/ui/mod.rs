@@ -144,6 +144,16 @@ impl eframe::App for App {
                         ui.colored_label(theme::err(), "● 未登录");
                     }
                 }
+                if let Some(slot) = &self.slot {
+                    let label = self
+                        .accounts_page
+                        .entries
+                        .iter()
+                        .find(|a| &a.id == slot)
+                        .map(|a| a.display().to_string())
+                        .unwrap_or_else(|| slot.clone());
+                    ui.colored_label(theme::accent(), format!("▶ 当前账号 {label}"));
+                }
             };
             if compact {
                 ui.horizontal_wrapped(draw_connection);
