@@ -118,7 +118,7 @@ pub fn login(
         "device_model": identity.device_name,
         "os_version": identity.os_version,
         "mac_address": identity.mac_address,
-        "imei": "",
+        "imei": identity.imei,
         "loginType": 0,
         "username": username,
         "password": password,

@@ -38,6 +38,9 @@ pub struct HeaderIdentity {
     /// 设备 MAC（首次生成后持久化，避免写死指纹）
     #[serde(default)]
     pub mac_address: String,
+    /// Android IMEI（可空；为空时按原生空串上报）
+    #[serde(default)]
+    pub imei: String,
     /// 提交 body 的城市名
     #[serde(default = "default_city")]
     pub city: String,
@@ -92,12 +95,13 @@ impl HeaderIdentity {
         now_ms() - days * 86_400_000
     }
 
-    /// 换成一台「新设备」：device_id / IDFA / MAC / 安装时间重新生成，
-    /// 机型、系统版本、城市与锚点保持不变。多账号每个账号调用一次，
+    /// 补齐设备指纹：device_id 为空时生成，MAC / 安装时间重新生成；
+    /// device_id / IDFA / IMEI 若已由用户填写则保留。多账号每个账号调用一次，
     /// 生成后全生命周期复用（逐次重置会触发 10121 设备风险）。
     pub fn freshen(&mut self) {
-        self.device_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-        self.idfa = String::new();
+        if self.device_id.is_empty() {
+            self.device_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+        }
         self.mac_address = random_mac();
         self.app_install_time = Self::fresh_install_time(&self.platform);
     }
@@ -116,6 +120,7 @@ impl Default for HeaderIdentity {
             anchor_lon: default_anchor_lon(),
             app_install_time: 0,
             mac_address: String::new(),
+            imei: String::new(),
             city: default_city(),
         }
     }
@@ -217,7 +222,7 @@ pub fn build_android_header(
     m.insert("DeviceId".into(), serde_json::Value::String(device_id.clone()));
     m.insert("osVersion".into(), serde_json::Value::String(identity.os_version.clone()));
     m.insert("deviceName".into(), serde_json::Value::String(identity.device_name.clone()));
-    m.insert("IMEI".into(), serde_json::Value::String(String::new()));
+    m.insert("IMEI".into(), serde_json::Value::String(identity.imei.clone()));
     m.insert("logicPixel".into(), serde_json::Value::String("1080x2400".into()));
     m.insert("physicPixel".into(), serde_json::Value::String("1080x2400".into()));
     m.insert("androidId".into(), serde_json::Value::String(String::new()));

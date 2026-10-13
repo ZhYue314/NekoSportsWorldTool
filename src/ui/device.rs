@@ -89,12 +89,18 @@ impl App {
         let id_label = if is_ios { "DeviceId（UUID 大写）" } else { "DeviceId（Android）" };
         let idfa_label = if is_ios { "IDFA（可空）" } else { "IMEI（可空）" };
         let name_label = if is_ios { "设备名" } else { "机型" };
+        // iOS 存 IDFA，Android 存 IMEI（各自独立字段）
+        let ad_id_buf: &mut String = if is_ios {
+            &mut self.device_buf.idfa
+        } else {
+            &mut self.device_buf.imei
+        };
         if mobile::compact_ui(ui) {
             ui.vertical(|ui| {
                 ui.label(id_label);
                 mobile::text_edit(ui, "device_id", &mut self.device_buf.device_id, crate::platform::InputKind::Text, ui.available_width());
                 ui.label(idfa_label);
-                mobile::text_edit(ui, "device_idfa", &mut self.device_buf.idfa, crate::platform::InputKind::Text, ui.available_width());
+                mobile::text_edit(ui, "device_idfa", ad_id_buf, crate::platform::InputKind::Text, ui.available_width());
                 ui.label("系统版本：");
                 mobile::text_edit(ui, "device_os", &mut self.device_buf.os_version, crate::platform::InputKind::Text, ui.available_width());
                 ui.label(name_label);
@@ -119,7 +125,7 @@ impl App {
                     mobile::text_edit(ui, "device_id", &mut self.device_buf.device_id, crate::platform::InputKind::Text, 340.0);
                     ui.end_row();
                     ui.label(idfa_label);
-                    mobile::text_edit(ui, "device_idfa", &mut self.device_buf.idfa, crate::platform::InputKind::Text, 340.0);
+                    mobile::text_edit(ui, "device_idfa", ad_id_buf, crate::platform::InputKind::Text, 340.0);
                     ui.end_row();
                     ui.label("系统版本：");
                     mobile::text_edit(ui, "device_os", &mut self.device_buf.os_version, crate::platform::InputKind::Text, 120.0);
