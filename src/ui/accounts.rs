@@ -21,8 +21,10 @@ pub struct AccountsPage {
     pub entries: Vec<AccountEntry>,
     /// 账号 id → 最近一次操作状态。
     pub status: HashMap<String, String>,
-    /// 账号 id → 设备/位置明细（避免每帧读盘）。
+    /// 账号 id → 设备/位置明细（多行，避免每帧读盘）。
     pub info: HashMap<String, String>,
+    /// 账号 id → 单行摘要（列表右侧常驻显示）。
+    pub summary: HashMap<String, String>,
     pub adding: bool,
     pub new_user: String,
     pub new_pass: String,
@@ -46,11 +48,12 @@ impl AccountsPage {
         page
     }
 
-    /// 读取各账号槽位的设备身份，生成明细文本（避免每帧读盘）。
+    /// 读取各账号槽位的设备身份，生成明细与摘要（避免每帧读盘）。
     fn refresh_info(&mut self) {
         let mut info = HashMap::new();
+        let mut summary = HashMap::new();
         for e in &self.entries {
-            let text = match model::load_identity_of(&e.id) {
+            let (sum, detail) = match model::load_identity_of(&e.id) {
                 Ok(id) => {
                     let sess = model::load_session_of(&e.id);
                     let login = if sess.is_logged_in() {
@@ -58,28 +61,37 @@ impl AccountsPage {
                     } else {
                         "未登录".to_string()
                     };
-                    format!(
-                        "槽位：{slot}\n账号：{user}（{login}）\nUUID：{device_id}\nIDFA：{idfa}\nIMEI：{imei}\nMAC：{mac}　安装时间：{install}\n平台：{platform}　机型：{name}　系统：{os}\n位置：{city}（{lat:.6},{lon:.6}）",
-                        slot = e.id,
-                        user = e.username,
-                        device_id = id.device_id,
-                        idfa = if id.idfa.is_empty() { "（空）".into() } else { id.idfa.clone() },
-                        imei = if id.imei.is_empty() { "（空）".into() } else { id.imei.clone() },
-                        mac = id.mac_address,
-                        install = crate::cli::fmt_hms(id.app_install_time),
-                        platform = if id.platform == "android" { "Android" } else { "iOS" },
-                        name = id.device_name,
-                        os = id.os_version,
-                        city = id.city,
-                        lat = id.anchor_lat,
-                        lon = id.anchor_lon,
+                    let plat = if id.platform == "android" { "Android" } else { "iOS" };
+                    let idfa = if id.idfa.is_empty() { "（空）".into() } else { id.idfa.clone() };
+                    let imei = if id.imei.is_empty() { "（空）".into() } else { id.imei.clone() };
+                    (
+                        format!(
+                            "{} · {plat} {} {} · {}（{:.6},{:.6}）",
+                            id.device_id, id.device_name, id.os_version, id.city,
+                            id.anchor_lat, id.anchor_lon,
+                        ),
+                        format!(
+                            "槽位：{slot}\n账号：{user}（{login}）\nUUID：{device_id}\nIDFA：{idfa}\nIMEI：{imei}\nMAC：{mac}　安装时间（上报 appInstallTime，非添加时间）：{install}\n平台：{plat}　机型：{name}　系统：{os}\n位置：{city}（{lat:.6},{lon:.6}）",
+                            slot = e.id,
+                            user = e.username,
+                            device_id = id.device_id,
+                            mac = id.mac_address,
+                            install = crate::cli::fmt_hms(id.app_install_time),
+                            name = id.device_name,
+                            os = id.os_version,
+                            city = id.city,
+                            lat = id.anchor_lat,
+                            lon = id.anchor_lon,
+                        ),
                     )
                 }
-                Err(err) => format!("× 读取设备失败：{err}"),
+                Err(err) => (format!("× {err}"), format!("× 读取设备失败：{err}")),
             };
-            info.insert(e.id.clone(), text);
+            info.insert(e.id.clone(), detail);
+            summary.insert(e.id.clone(), sum);
         }
         self.info = info;
+        self.summary = summary;
     }
 
     /// 用当前设备身份填充表单；UUID 清空，保证新账号不会和当前设备同 ID。
@@ -238,7 +250,7 @@ impl App {
             ui.columns(2, |cols| {
                 egui::Grid::new("account_device")
                     .num_columns(2)
-                    .spacing([8.0, 3.0])
+                    .spacing([12.0, 8.0])
                     .show(&mut cols[0], |ui| {
                         ui.label("平台：");
                         ui.horizontal(|ui| {
@@ -260,7 +272,7 @@ impl App {
                             "acc_uuid",
                             &mut page.new_identity.device_id,
                             InputKind::Text,
-                            170.0,
+                            300.0,
                         );
                         ui.end_row();
                         ui.label(ad_id_label);
@@ -269,7 +281,7 @@ impl App {
                         } else {
                             &mut page.new_identity.imei
                         };
-                        mobile::text_edit(ui, "acc_adid", ad_buf, InputKind::Text, 170.0);
+                        mobile::text_edit(ui, "acc_adid", ad_buf, InputKind::Text, 300.0);
                         ui.end_row();
                         ui.label(name_label);
                         mobile::text_edit(
@@ -277,7 +289,7 @@ impl App {
                             "acc_model",
                             &mut page.new_identity.device_name,
                             InputKind::Text,
-                            170.0,
+                            300.0,
                         );
                         ui.end_row();
                         ui.label("系统版本：");
@@ -286,7 +298,7 @@ impl App {
                             "acc_os",
                             &mut page.new_identity.os_version,
                             InputKind::Text,
-                            170.0,
+                            300.0,
                         );
                         ui.end_row();
                         if !is_ios {
@@ -296,14 +308,14 @@ impl App {
                                 "acc_brand",
                                 &mut page.new_identity.manufacturer,
                                 InputKind::Text,
-                                170.0,
+                                300.0,
                             );
                             ui.end_row();
                         }
                     });
                 egui::Grid::new("account_place")
                     .num_columns(2)
-                    .spacing([8.0, 3.0])
+                    .spacing([12.0, 8.0])
                     .show(&mut cols[1], |ui| {
                         ui.label("城市：");
                         mobile::text_edit(
@@ -311,7 +323,7 @@ impl App {
                             "acc_city",
                             &mut page.new_identity.city,
                             InputKind::Text,
-                            150.0,
+                            200.0,
                         );
                         ui.end_row();
                         ui.label("纬度：");
@@ -366,54 +378,65 @@ impl App {
             let active = self.slot.as_deref() == Some(id.as_str());
             let locked = self.batch_busy || page.batch_running;
             let open = page.expanded.contains(&id);
-            mobile::row(ui, |ui| {
-                let mut checked = page.entries[i].enabled;
-                if ui
-                    .checkbox(&mut checked, "")
-                    .on_hover_text("勾选后才参与一键批量")
-                    .changed()
-                {
-                    enable_change = Some((id.clone(), checked));
-                }
-                let mark = if active { "● " } else { "○ " };
-                ui.label(egui::RichText::new(format!("{mark}{title}")).strong());
-                ui.monospace(&username);
-                if !status.is_empty() {
-                    let color = if status.starts_with('√') {
-                        theme::ok()
-                    } else if status.starts_with('×') {
-                        theme::err()
-                    } else if status.starts_with('⚠') {
-                        theme::warn()
-                    } else {
-                        theme::text_dim()
-                    };
-                    ui.colored_label(color, &status);
-                }
-                if ui
-                    .button(if open { "收起" } else { "详情" })
-                    .clicked()
-                {
-                    toggle_detail = Some((id.clone(), !open));
-                }
-                if ui
-                    .add_enabled(!locked && !active, egui::Button::new("切换"))
-                    .clicked()
-                {
-                    switch_to = Some(id.clone());
-                }
-                if ui
-                    .add_enabled(!locked, egui::Button::new("删除"))
-                    .clicked()
-                {
-                    delete = Some(id.clone());
-                }
-            });
-            if open && !detail.is_empty() {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.colored_label(theme::text_dim(), &detail);
+            let summary = page.summary.get(&id).cloned().unwrap_or_default();
+            let color = if status.starts_with('√') {
+                theme::ok()
+            } else if status.starts_with('×') {
+                theme::err()
+            } else if status.starts_with('⚠') {
+                theme::warn()
+            } else {
+                theme::text_dim()
+            };
+            // 左：操作区（每行齐平）；右：状态 + 设备数据（详情展开为完整明细）
+            ui.columns(2, |cols| {
+                cols[0].horizontal_wrapped(|ui| {
+                    let mut checked = page.entries[i].enabled;
+                    if ui
+                        .checkbox(&mut checked, "")
+                        .on_hover_text("勾选后才参与一键批量")
+                        .changed()
+                    {
+                        enable_change = Some((id.clone(), checked));
+                    }
+                    let mark = if active { "● " } else { "○ " };
+                    ui.label(egui::RichText::new(format!("{mark}{title}")).strong());
+                    ui.monospace(&username);
+                    if ui
+                        .button(if open { "收起" } else { "详情" })
+                        .clicked()
+                    {
+                        toggle_detail = Some((id.clone(), !open));
+                    }
+                    if ui
+                        .add_enabled(!locked && !active, egui::Button::new("切换"))
+                        .clicked()
+                    {
+                        switch_to = Some(id.clone());
+                    }
+                    if ui
+                        .add_enabled(!locked, egui::Button::new("删除"))
+                        .clicked()
+                    {
+                        delete = Some(id.clone());
+                    }
                 });
-            }
+                cols[1].vertical(|ui| {
+                    if !status.is_empty() {
+                        ui.colored_label(color, &status);
+                    }
+                    if open && !detail.is_empty() {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.colored_label(theme::text_dim(), &detail);
+                        });
+                    } else if !summary.is_empty() {
+                        ui.colored_label(
+                            theme::text_dim(),
+                            egui::RichText::new(&summary).small(),
+                        );
+                    }
+                });
+            });
         }
         if page.entries.is_empty() {
             ui.colored_label(theme::text_dim(), "还没有账号，点上方「添加账号」。");
